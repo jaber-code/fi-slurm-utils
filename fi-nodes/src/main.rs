@@ -13,6 +13,7 @@ use fi_slurm::filter::{FeatureQuery, filter_nodes_by_feature};
 use fi_slurm::jobs::{SlurmJobs, build_node_to_job_map, enrich_jobs_with_node_ids, get_jobs};
 use fi_slurm::nodes::get_nodes;
 use fi_slurm::nodes::{NodeState, SlurmNodes};
+use fi_slurm::states::ShowFlags;
 use fi_slurm::utils::{finalize_slurm, initialize_slurm};
 use std::collections::{HashMap, HashSet};
 use tree_report::{GpuFilter, build_tree_report, print_tree_report};
@@ -68,7 +69,7 @@ fn run() -> Result<(), String> {
     }
 
     // Collect current node information from the cluster
-    let mut nodes_collection = get_nodes()?;
+    let mut nodes_collection = get_nodes(true)?;
     if args.debug {
         println!(
             "Finished loading node data for {} nodes ({} skipped with 0 CPUs) from Slurm: {:?}",
@@ -79,7 +80,8 @@ fn run() -> Result<(), String> {
     }
 
     // collect current job information from the cluster
-    let mut jobs_collection = get_jobs()?;
+    // ALL so that jobs in hidden partitions are still counted
+    let mut jobs_collection = get_jobs(Some(ShowFlags::ALL | ShowFlags::DETAIL))?;
     if args.debug {
         println!(
             "Finished loading job data for {} jobs from Slurm: {:?}",

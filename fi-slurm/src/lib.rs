@@ -15,4 +15,5 @@ pub mod parser;
 pub mod partitions;
 pub mod site;
 pub mod states;
+pub mod steps;
 pub mod utils;

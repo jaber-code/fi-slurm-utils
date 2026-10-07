@@ -32,11 +32,8 @@ impl RawSlurmJobInfo {
     /// This is the only function that directly calls the unsafe `slurm_load_jobs`
     /// FFI function. On success, it returns an instance of the safe RAII wrapper,
     /// to be consumed by the .into_slurm_info() method
-    pub fn load(update_time: time_t) -> Result<Self, String> {
+    pub fn load(update_time: time_t, show_flags: ShowFlags) -> Result<Self, String> {
         let mut job_info_msg_ptr: *mut job_info_msg_t = std::ptr::null_mut();
-
-        // ALL so that jobs in hidden partitions are still counted
-        let show_flags = ShowFlags::ALL | ShowFlags::DETAIL;
 
         let return_code =
             unsafe { slurm_load_jobs(update_time, &mut job_info_msg_ptr, show_flags.bits()) };
@@ -100,12 +97,17 @@ impl RawSlurmJobInfo {
 /// owned Rust data structure
 ///
 /// This function is the primary entry point for accessing job data. It handles
-/// all unsafe FFI calls, data conversion, and memory management internally
-pub fn get_jobs() -> Result<SlurmJobs, String> {
+/// all unsafe FFI calls, data conversion, and memory management internally.
+///
+/// `None` loads as `scontrol show jobs` does without `--all`, leaving out jobs in hidden
+/// partitions; pass `ShowFlags::ALL` among the flags to include them.
+pub fn get_jobs(show_flags: Option<ShowFlags>) -> Result<SlurmJobs, String> {
+    let show_flags = show_flags.unwrap_or(ShowFlags::DETAIL);
+
     // We load the raw C data into memory,
     // convert into safe, Rust-native structs,
     // and then consume the wrapper to drop the original C memory
-    RawSlurmJobInfo::load(0)?.into_slurm_jobs()
+    RawSlurmJobInfo::load(0, show_flags)?.into_slurm_jobs()
 }
 
 /// Represents the state of a Slurm job in a type-safe way

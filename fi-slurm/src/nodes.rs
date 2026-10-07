@@ -54,7 +54,9 @@ impl RawSlurmNodeInfo {
         }
     }
 
-    pub fn into_slurm_nodes(self) -> Result<SlurmNodes, String> {
+    /// `skip_zero_cpu` leaves out nodes reporting 0 CPUs, which are usually misconfigured,
+    /// and counts them in `skip_count` instead
+    pub fn into_slurm_nodes(self, skip_zero_cpu: bool) -> Result<SlurmNodes, String> {
         let raw_nodes_slice = self.as_slice();
 
         let num_nodes = raw_nodes_slice.len();
@@ -66,7 +68,7 @@ impl RawSlurmNodeInfo {
             let safe_node = Node::from_raw_binding(id, raw_node)?;
 
             // Misconfigured node?
-            if safe_node.cpus == 0 {
+            if skip_zero_cpu && safe_node.cpus == 0 {
                 skip_count += 1;
                 continue;
             }
@@ -88,11 +90,13 @@ impl RawSlurmNodeInfo {
     }
 }
 
-pub fn get_nodes() -> Result<SlurmNodes, String> {
+/// Fetches all nodes from Slurm. `skip_zero_cpu` leaves out nodes reporting 0 CPUs;
+/// `scontrol show nodes` keeps them.
+pub fn get_nodes(skip_zero_cpu: bool) -> Result<SlurmNodes, String> {
     // We load the raw C data into memory,
     // convert into safe, Rust-native structs,
     // and then consume the wrapper to drop the original C memory
-    RawSlurmNodeInfo::load(0)?.into_slurm_nodes()
+    RawSlurmNodeInfo::load(0)?.into_slurm_nodes(skip_zero_cpu)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -8,6 +8,7 @@ use fi_slurm::{
         get_jobs, print_accounts,
     },
     nodes::get_nodes,
+    states::ShowFlags,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -233,7 +234,8 @@ fn print_heading(heading: &str, table_width: usize) {
 pub fn leaderboard(top_n: usize) {
     let mut map: HashMap<String, (u32, u32)> = HashMap::new();
 
-    let jobs_collection = get_jobs().unwrap();
+    // ALL so that jobs in hidden partitions are still counted
+    let jobs_collection = get_jobs(Some(ShowFlags::ALL | ShowFlags::DETAIL)).unwrap();
 
     jobs_collection.jobs.iter().for_each(|(_, job)| {
         if job.job_state == JobState::Running {
@@ -260,9 +262,10 @@ pub fn leaderboard(top_n: usize) {
 pub fn leaderboard_feature(top_n: usize, features: Vec<String>) {
     let mut map: HashMap<String, (u32, u32)> = HashMap::new();
 
-    let mut jobs_collection = get_jobs().unwrap();
+    // ALL so that jobs in hidden partitions are still counted
+    let mut jobs_collection = get_jobs(Some(ShowFlags::ALL | ShowFlags::DETAIL)).unwrap();
 
-    let nodes_collection = get_nodes().unwrap();
+    let nodes_collection = get_nodes(true).unwrap();
 
     enrich_jobs_with_node_ids(&mut jobs_collection, &nodes_collection.name_to_id);
 

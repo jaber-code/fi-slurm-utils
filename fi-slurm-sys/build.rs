@@ -9,6 +9,7 @@ const ALLOWED_FUNCTIONS: &[&str] = &["slurm_.*", "slurmdb_.*"];
 const ALLOWED_TYPES: &[&str] = &[
     "slurm.*",
     "job_info.*",
+    "job_step_info.*",
     "job_states",
     "node_info.*",
     "node_states",
@@ -23,6 +24,7 @@ const ALLOWED_TYPES: &[&str] = &[
 ];
 const ALLOWED_VARS: &[&str] = &[
     "SLURM_.*",
+    "SLURMDB_.*",
     "JOB_.*",
     "NODE_.*",
     "PARTITION_.*",
