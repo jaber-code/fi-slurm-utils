@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use fi_slurm_sys::{
     NO_VAL, SLURM_BATCH_SCRIPT, SLURM_EXTERN_CONT, SLURM_INTERACTIVE_STEP, SLURM_PENDING_STEP,
     job_step_info_response_msg_t, job_step_info_t, slurm_free_job_step_info_response_msg,
-    slurm_get_job_steps, time_t,
+    slurm_get_job_steps, slurm_step_id_t,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -35,20 +35,22 @@ impl RawSlurmStepInfo {
     /// `job_id` and `step_id` narrow the request to one job or one step of it; Slurm reads
     /// `NO_VAL` in either as "all of them". This is the only function that directly calls
     /// the unsafe `slurm_get_job_steps` FFI function.
-    pub fn load(update_time: time_t, job_id: u32, step_id: u32) -> Result<Self, String> {
+    pub fn load(job_id: u32, step_id: u32) -> Result<Self, String> {
         let mut step_info_msg_ptr: *mut job_step_info_response_msg_t = std::ptr::null_mut();
+
+        // zeroed first so that any field this code does not name is left unset, as Slurm's
+        // own initializer leaves it
+        let mut step: slurm_step_id_t = unsafe { std::mem::zeroed() };
+        step.job_id = job_id;
+        step.step_id = step_id;
+        // not a component of a heterogeneous step
+        step.step_het_comp = NO_VAL;
 
         // ALL so that steps of jobs in hidden partitions are still returned
         let show_flags = ShowFlags::ALL;
 
         let return_code = unsafe {
-            slurm_get_job_steps(
-                update_time,
-                job_id,
-                step_id,
-                &mut step_info_msg_ptr,
-                show_flags.bits(),
-            )
+            slurm_get_job_steps(&mut step, &mut step_info_msg_ptr, show_flags.bits())
         };
 
         if return_code != 0 || step_info_msg_ptr.is_null() {
@@ -86,7 +88,7 @@ impl RawSlurmStepInfo {
 ///
 /// `None` fetches the steps of every job; `Some(job_id)` only those of that job.
 pub fn get_job_steps(job_id: Option<u32>) -> Result<Vec<JobStep>, String> {
-    Ok(RawSlurmStepInfo::load(0, job_id.unwrap_or(NO_VAL), NO_VAL)?.into_job_steps())
+    Ok(RawSlurmStepInfo::load(job_id.unwrap_or(NO_VAL), NO_VAL)?.into_job_steps())
 }
 
 /// Which step of a job this is. Slurm reserves a few step IDs at the top of the range for
@@ -170,7 +172,7 @@ impl JobStep {
             num_cpus: raw_step.num_cpus,
             num_tasks: raw_step.num_tasks,
             raw_hostlist: unsafe { c_str_to_string(raw_step.nodes) },
-            allocated_tres: unsafe { parse_tres_str(raw_step.tres_alloc_str) },
+            allocated_tres: unsafe { parse_tres_str(raw_step.tres_fmt_alloc_str) },
         }
     }
 
