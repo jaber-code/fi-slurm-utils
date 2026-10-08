@@ -227,7 +227,7 @@ impl Job {
             num_tasks: raw_job.num_tasks,
             raw_hostlist: unsafe { c_str_to_string(raw_job.nodes) },
             node_ids: Vec::new(),
-            allocated_gres: unsafe { parse_tres_str(raw_job.tres_fmt_alloc_str) },
+            allocated_gres: unsafe { parse_tres_str(raw_job.tres_alloc_str) },
             gres_total: if !raw_job.gres_total.is_null() {
                 Some(
                     unsafe { CStr::from_ptr(raw_job.gres_total) }
