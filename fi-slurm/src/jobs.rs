@@ -6,7 +6,7 @@ use colored::Colorize;
 use fi_slurm_sys::{
     GRES_ENFORCE_BIND, INFINITE16, JOB_SHARED_MCS, JOB_SHARED_NONE, JOB_SHARED_OK,
     JOB_SHARED_USER, MEM_PER_CPU, NICE_OFFSET, NO_VAL16, job_info, job_info_msg_t,
-    slurm_free_job_info_msg, slurm_job_reason_string, slurm_load_jobs, time_t,
+    slurm_free_job_info_msg, slurm_load_jobs, time_t,
 };
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -193,8 +193,9 @@ pub struct Job {
     /// The flags carried alongside `job_state`, e.g. a running job whose epilog has started
     pub state_flags: JobStateFlags,
     pub state_description: String,
-    /// Why the job is pending or failed, as scontrol prints it, e.g. "None" or "Priority"
-    pub reason: String,
+    /// Why the job is pending or failed, as Slurm's `enum job_state_reason` numbers it:
+    /// 0 is WAIT_NO_REASON, which scontrol prints as "None"
+    pub state_reason: u32,
     pub priority: u32,
     pub nice: i64,
     pub restart_count: u16,
@@ -324,8 +325,11 @@ fn oversubscribe_str(shared: u16) -> &'static str {
 impl Job {
     /// Creates a safe, owned Rust `Job` from a raw C `job_info` struct
     pub fn from_raw_binding(raw_job: &job_info) -> Self {
-        let mem_per_cpu = (raw_job.pn_min_memory & MEM_PER_CPU) != 0;
-        let min_memory_mb = raw_job.pn_min_memory & !MEM_PER_CPU;
+        // bindgen types the flag as i64, the top bit it sets being out of range for a
+        // positive one; the cast keeps the bits as they are
+        let mem_per_cpu_flag = MEM_PER_CPU as u64;
+        let mem_per_cpu = (raw_job.pn_min_memory & mem_per_cpu_flag) != 0;
+        let min_memory_mb = raw_job.pn_min_memory & !mem_per_cpu_flag;
         let is_het_job = raw_job.het_job_id != 0;
 
         Job {
@@ -335,7 +339,7 @@ impl Job {
             het_job_id: is_het_job.then_some(raw_job.het_job_id),
             het_job_offset: is_het_job.then_some(raw_job.het_job_offset),
             het_job_id_set: unsafe { c_str_to_string(raw_job.het_job_id_set) },
-            reason: unsafe { c_str_to_string(slurm_job_reason_string(raw_job.state_reason as _)) },
+            state_reason: raw_job.state_reason,
             priority: raw_job.priority,
             // Slurm stores nice shifted up so that it fits unsigned
             nice: i64::from(raw_job.nice) - i64::from(NICE_OFFSET),
