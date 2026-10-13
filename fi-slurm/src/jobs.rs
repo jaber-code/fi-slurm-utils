@@ -3,9 +3,14 @@ use crate::states::{JobStateFlags, ShowFlags};
 use crate::utils::{c_str_to_string, time_t_to_datetime};
 use chrono::{DateTime, Utc};
 use colored::Colorize;
-use fi_slurm_sys::{job_info, job_info_msg_t, slurm_free_job_info_msg, slurm_load_jobs, time_t};
+use fi_slurm_sys::{
+    GRES_ENFORCE_BIND, INFINITE16, JOB_SHARED_MCS, JOB_SHARED_NONE, JOB_SHARED_OK,
+    JOB_SHARED_USER, MEM_PER_CPU, NICE_OFFSET, NO_VAL16, job_info, job_info_msg_t,
+    slurm_free_job_info_msg, slurm_job_reason_string, slurm_load_jobs, time_t,
+};
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::time::Duration;
 
 /// We use this struct to manage the C-allocated memory,
 /// automatically dropping it when it goes out of memory
@@ -174,17 +179,42 @@ pub struct Job {
     pub group_id: u32,
     pub partition: String,
     pub account: String,
+    pub qos: String,
+    pub reservation: String,
+    /// The most tasks of this job's array allowed to run at once
+    pub array_max_tasks: u32,
+    /// `None` unless the job is a component of a heterogeneous job
+    pub het_job_id: Option<u32>,
+    pub het_job_offset: Option<u32>,
+    pub het_job_id_set: String,
 
     // State and Time
     pub job_state: JobState,
     /// The flags carried alongside `job_state`, e.g. a running job whose epilog has started
     pub state_flags: JobStateFlags,
     pub state_description: String,
+    /// Why the job is pending or failed, as scontrol prints it, e.g. "None" or "Priority"
+    pub reason: String,
+    pub priority: u32,
+    pub nice: i64,
+    pub restart_count: u16,
     pub submit_time: DateTime<Utc>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
     pub time_limit_minutes: u32,
+    /// `None` where the job set no minimum
+    pub time_min_minutes: Option<u32>,
     pub preemptable_time: DateTime<Utc>,
+    // `None` for each time Slurm has not set
+    pub accrue_time: Option<DateTime<Utc>>,
+    pub eligible_time: Option<DateTime<Utc>>,
+    pub deadline: Option<DateTime<Utc>>,
+    pub last_sched_eval: Option<DateTime<Utc>>,
+    pub preempt_time: Option<DateTime<Utc>>,
+    pub suspend_time: Option<DateTime<Utc>>,
+    /// How long the job ran before it was last suspended
+    pub pre_suspend_time: Duration,
+    pub delay_boot: Duration,
 
     // Resource Allocation
     pub num_nodes: u32,
@@ -194,17 +224,175 @@ pub struct Job {
     pub node_ids: Vec<usize>,
     pub allocated_gres: HashMap<String, u64>,
     pub gres_total: Option<String>,
+    /// The GRES allocated on each node, one entry per node, e.g. "gpu:1(IDX:4)"
+    pub gres_detail: Vec<String>,
+    pub batch_host: String,
+    pub scheduled_nodes: String,
+
+    // Resource Requests
+    pub requested_tres: HashMap<String, u64>,
+    pub cpus_per_task: u16,
+    pub min_cpus_per_node: u16,
+    // Slurm holds one memory request, either per node or per CPU, so at most one is set
+    pub min_memory_node_mb: Option<u64>,
+    pub min_memory_cpu_mb: Option<u64>,
+    pub min_tmp_disk_mb: u32,
+    // `None` where scontrol prints `*`
+    pub sockets_per_node: Option<u16>,
+    pub core_spec: Option<u16>,
+    pub ntasks_per_node: Option<u16>,
+    pub ntasks_per_board: Option<u16>,
+    pub ntasks_per_socket: Option<u16>,
+    pub ntasks_per_core: Option<u16>,
+    pub required_nodes: String,
+    pub excluded_nodes: String,
+    pub features: String,
+    pub licenses: String,
+    pub cpus_per_tres: String,
+    pub mem_per_tres: String,
+    pub tres_bind: String,
+    pub tres_per_job: String,
+    pub tres_per_node: String,
+    pub tres_per_task: String,
+    pub gres_enforce_bind: bool,
+    pub contiguous: bool,
+    pub reboot: bool,
+    pub requeue: bool,
+    /// As scontrol prints it: "NO", "YES", "USER", "MCS", or "OK" where the job left it
+    /// to the partition
+    pub oversubscribe: String,
+    pub network: String,
+    pub mcs_label: String,
 
     // Other Information
     pub work_dir: String,
     pub command: String,
     pub exit_code: u32,
+    /// The highest exit code of any of the job's steps
+    pub derived_exit_code: u32,
+    /// 1 for a batch job, 0 for one started by salloc or srun
+    pub batch_flag: u16,
+    pub dependency: String,
+    pub comment: String,
+    pub container: String,
+    /// The `MAIL_JOB_*` flags
+    pub mail_type: u16,
+    pub mail_user: String,
+    /// The node and session ID the job was submitted from
+    pub alloc_node: String,
+    pub alloc_sid: u32,
+    // the paths as submitted, `%`-patterns such as %j left unexpanded
+    pub std_in: String,
+    pub std_out: String,
+    pub std_err: String,
+}
+
+/// Slurm leaves a time it has no value for at 0
+fn optional_time(time: time_t) -> Option<DateTime<Utc>> {
+    (time != 0).then(|| time_t_to_datetime(time))
+}
+
+/// Slurm marks a count it was not given as NO_VAL16 or INFINITE16, both of which
+/// scontrol prints as `*`
+fn optional_u16(value: u16) -> Option<u16> {
+    (value != NO_VAL16 as u16 && value != INFINITE16 as u16).then_some(value)
+}
+
+/// Reads an array of `count` C strings
+unsafe fn c_str_array(ptr: *mut *mut i8, count: u32) -> Vec<String> {
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    unsafe { std::slice::from_raw_parts(ptr, count as usize) }
+        .iter()
+        .map(|&s| unsafe { c_str_to_string(s) })
+        .collect()
+}
+
+/// The OverSubscribe value as scontrol prints it
+fn oversubscribe_str(shared: u16) -> &'static str {
+    match u32::from(shared) {
+        JOB_SHARED_NONE => "NO",
+        JOB_SHARED_OK => "YES",
+        JOB_SHARED_USER => "USER",
+        JOB_SHARED_MCS => "MCS",
+        // unset by the job, so the partition's setting applies
+        _ => "OK",
+    }
 }
 
 impl Job {
     /// Creates a safe, owned Rust `Job` from a raw C `job_info` struct
     pub fn from_raw_binding(raw_job: &job_info) -> Self {
+        let mem_per_cpu = (raw_job.pn_min_memory & MEM_PER_CPU) != 0;
+        let min_memory_mb = raw_job.pn_min_memory & !MEM_PER_CPU;
+        let is_het_job = raw_job.het_job_id != 0;
+
         Job {
+            qos: unsafe { c_str_to_string(raw_job.qos) },
+            reservation: unsafe { c_str_to_string(raw_job.resv_name) },
+            array_max_tasks: raw_job.array_max_tasks,
+            het_job_id: is_het_job.then_some(raw_job.het_job_id),
+            het_job_offset: is_het_job.then_some(raw_job.het_job_offset),
+            het_job_id_set: unsafe { c_str_to_string(raw_job.het_job_id_set) },
+            reason: unsafe { c_str_to_string(slurm_job_reason_string(raw_job.state_reason as _)) },
+            priority: raw_job.priority,
+            // Slurm stores nice shifted up so that it fits unsigned
+            nice: i64::from(raw_job.nice) - i64::from(NICE_OFFSET),
+            restart_count: raw_job.restart_cnt,
+            time_min_minutes: (raw_job.time_min != 0).then_some(raw_job.time_min),
+            accrue_time: optional_time(raw_job.accrue_time),
+            eligible_time: optional_time(raw_job.eligible_time),
+            deadline: optional_time(raw_job.deadline),
+            last_sched_eval: optional_time(raw_job.last_sched_eval),
+            preempt_time: optional_time(raw_job.preempt_time),
+            suspend_time: optional_time(raw_job.suspend_time),
+            pre_suspend_time: Duration::from_secs(raw_job.pre_sus_time.max(0) as u64),
+            delay_boot: Duration::from_secs(u64::from(raw_job.delay_boot)),
+            gres_detail: unsafe { c_str_array(raw_job.gres_detail_str, raw_job.gres_detail_cnt) },
+            batch_host: unsafe { c_str_to_string(raw_job.batch_host) },
+            scheduled_nodes: unsafe { c_str_to_string(raw_job.sched_nodes) },
+            requested_tres: unsafe { parse_tres_str(raw_job.tres_req_str) },
+            cpus_per_task: raw_job.cpus_per_task,
+            min_cpus_per_node: raw_job.pn_min_cpus,
+            min_memory_node_mb: (!mem_per_cpu).then_some(min_memory_mb),
+            min_memory_cpu_mb: mem_per_cpu.then_some(min_memory_mb),
+            min_tmp_disk_mb: raw_job.pn_min_tmp_disk,
+            sockets_per_node: optional_u16(raw_job.sockets_per_node),
+            core_spec: optional_u16(raw_job.core_spec),
+            ntasks_per_node: optional_u16(raw_job.ntasks_per_node),
+            ntasks_per_board: optional_u16(raw_job.ntasks_per_board),
+            ntasks_per_socket: optional_u16(raw_job.ntasks_per_socket),
+            ntasks_per_core: optional_u16(raw_job.ntasks_per_core),
+            required_nodes: unsafe { c_str_to_string(raw_job.req_nodes) },
+            excluded_nodes: unsafe { c_str_to_string(raw_job.exc_nodes) },
+            features: unsafe { c_str_to_string(raw_job.features) },
+            licenses: unsafe { c_str_to_string(raw_job.licenses) },
+            cpus_per_tres: unsafe { c_str_to_string(raw_job.cpus_per_tres) },
+            mem_per_tres: unsafe { c_str_to_string(raw_job.mem_per_tres) },
+            tres_bind: unsafe { c_str_to_string(raw_job.tres_bind) },
+            tres_per_job: unsafe { c_str_to_string(raw_job.tres_per_job) },
+            tres_per_node: unsafe { c_str_to_string(raw_job.tres_per_node) },
+            tres_per_task: unsafe { c_str_to_string(raw_job.tres_per_task) },
+            gres_enforce_bind: (raw_job.bitflags & GRES_ENFORCE_BIND as u64) != 0,
+            contiguous: raw_job.contiguous != 0,
+            reboot: raw_job.reboot != 0,
+            requeue: raw_job.requeue != 0,
+            oversubscribe: oversubscribe_str(raw_job.shared).to_string(),
+            network: unsafe { c_str_to_string(raw_job.network) },
+            mcs_label: unsafe { c_str_to_string(raw_job.mcs_label) },
+            derived_exit_code: raw_job.derived_ec,
+            batch_flag: raw_job.batch_flag,
+            dependency: unsafe { c_str_to_string(raw_job.dependency) },
+            comment: unsafe { c_str_to_string(raw_job.comment) },
+            container: unsafe { c_str_to_string(raw_job.container) },
+            mail_type: raw_job.mail_type,
+            mail_user: unsafe { c_str_to_string(raw_job.mail_user) },
+            alloc_node: unsafe { c_str_to_string(raw_job.alloc_node) },
+            alloc_sid: raw_job.alloc_sid,
+            std_in: unsafe { c_str_to_string(raw_job.std_in) },
+            std_out: unsafe { c_str_to_string(raw_job.std_out) },
+            std_err: unsafe { c_str_to_string(raw_job.std_err) },
             job_id: raw_job.job_id,
             array_job_id: raw_job.array_job_id,
             array_task_id: raw_job.array_task_id,
@@ -242,6 +430,36 @@ impl Job {
             command: unsafe { c_str_to_string(raw_job.command) },
             exit_code: raw_job.exit_code,
         }
+    }
+
+    /// How long the job has run, worked out as scontrol does: time spent suspended does
+    /// not count, and a job still running is counted up to now
+    pub fn run_time(&self) -> Duration {
+        let start = self.start_time.timestamp();
+
+        let seconds = if self.job_state == JobState::Pending || start == 0 {
+            0
+        } else if self.job_state == JobState::Suspended {
+            self.pre_suspend_time.as_secs() as i64
+        } else {
+            let end = if self.job_state == JobState::Running || self.end_time.timestamp() == 0 {
+                Utc::now().timestamp()
+            } else {
+                self.end_time.timestamp()
+            };
+            match self.suspend_time {
+                // resumed after a suspension: what ran before it, then since the resume
+                Some(resumed) => end - resumed.timestamp() + self.pre_suspend_time.as_secs() as i64,
+                None => end - start,
+            }
+        };
+
+        Duration::from_secs(seconds.max(0) as u64)
+    }
+
+    /// The GPUs allocated to the job, counted from its allocated TRES
+    pub fn num_gpus(&self) -> u64 {
+        self.allocated_gres.get("gres/gpu").copied().unwrap_or(0)
     }
 }
 

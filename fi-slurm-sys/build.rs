@@ -32,6 +32,9 @@ const ALLOWED_VARS: &[&str] = &[
     "ASSOC_MGR_.*",
     "INFINITE.*",
     "NO_VAL.*",
+    "MEM_PER_CPU",
+    "NICE_OFFSET",
+    "GRES_ENFORCE_BIND",
 ];
 
 fn main() {

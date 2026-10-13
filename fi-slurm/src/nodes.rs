@@ -1,4 +1,5 @@
 use crate::energy::AcctGatherEnergy;
+use crate::parser::parse_tres_str;
 use crate::states::{NodeStateFlags, ShowFlags};
 use crate::utils::{c_str_to_string, time_t_to_datetime};
 use chrono::{DateTime, Utc};
@@ -260,11 +261,13 @@ pub struct Node {
     pub cpu_load: u32,
     pub cpus_effective: u16,
     pub cpu_spec_list: String,
+    pub alloc_cpus: u16,
 
     // Memory information (in MB)
     pub real_memory: u64,
     pub free_memory: u64,
     pub mem_spec_limit: u64,
+    pub alloc_memory: u64,
 
     // Energy information
     _energy: Option<AcctGatherEnergy>,
@@ -282,6 +285,8 @@ pub struct Node {
     pub gres_used: String,
     pub res_cores_per_gpu: u16,
     pub gpu_spec: String,
+    /// The TRES allocated on the node, parsed as a job's are, e.g. "cpu" or "gres/gpu"
+    pub allocated_tres: HashMap<String, u64>,
 
     // Time information
     pub boot_time: DateTime<Utc>, // converted from a C i64 time_t
@@ -370,11 +375,13 @@ impl Node {
             cpu_load: raw_node.cpu_load,
             cpus_effective: raw_node.cpus_efctv,
             cpu_spec_list: "TODO: Implement cpu_spec_list parsing".to_string(), // Placeholder
+            alloc_cpus: raw_node.alloc_cpus,
 
             // Memory information (in MB)
             real_memory: raw_node.real_memory,
             free_memory: raw_node.free_mem,
             mem_spec_limit: raw_node.mem_spec_limit,
+            alloc_memory: raw_node.alloc_memory,
 
             _energy: energy,
 
@@ -389,6 +396,7 @@ impl Node {
             gres_used: unsafe { c_str_to_string(raw_node.gres_used) }, // Keep the raw string for reference
             res_cores_per_gpu: raw_node.res_cores_per_gpu,
             gpu_spec: "TODO: Implement gpu_spec parsing".to_string(), // Placeholder
+            allocated_tres: unsafe { parse_tres_str(raw_node.alloc_tres_fmt_str) },
 
             // Time information
             boot_time: time_t_to_datetime(raw_node.boot_time),
